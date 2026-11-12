@@ -1,0 +1,8 @@
+# What the app team writes. One object.
+apiVersion: platform.example.com/v1alpha1
+kind: ChatEndpoint
+metadata:
+  name: chat
+  namespace: team-chat
+spec:
+  hostname: chat.example.com

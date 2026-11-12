@@ -1,0 +1,9 @@
+# Replay of break 3: same typo, now on the one object the app team owns.
+apiVersion: platform.example.com/v1alpha1
+kind: ChatEndpoint
+metadata:
+  name: chat-typo
+  namespace: team-chat
+spec:
+  hostname: typo.example.com
+  gatewayName: shared-gateway   # real name is shared-gw

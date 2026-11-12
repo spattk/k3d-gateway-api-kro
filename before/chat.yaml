@@ -1,0 +1,85 @@
+# Act 2 starting point: one Ingress became four objects.
+# Note where each one lives and what it points at.
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: chat
+  namespace: team-chat
+spec:
+  parentRefs:
+    - name: shared-gw
+      namespace: platform
+      sectionName: http
+  hostnames: ["chat.example.com"]
+  rules:
+    - matches:
+        - headers:
+            - name: x-tier
+              value: premium
+      backendRefs:
+        - name: model-70b
+          port: 5678
+    - backendRefs:
+        - name: model-8b
+          port: 5678
+---
+# Was: nginx.ingress.kubernetes.io/auth-* annotations
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: SecurityPolicy
+metadata:
+  name: chat-auth
+  namespace: team-chat
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: chat
+  jwt:
+    providers:
+      - name: demo-issuer
+        localJWKS:
+          type: ValueRef
+          valueRef:
+            group: ""
+            kind: ConfigMap
+            name: chat-jwks
+---
+# Was: nginx.ingress.kubernetes.io/limit-rpm
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: BackendTrafficPolicy
+metadata:
+  name: chat-ratelimit
+  namespace: team-chat
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: HTTPRoute
+      name: chat
+  rateLimit:
+    local:
+      rules:
+        - clientSelectors:
+            - headers:
+                - name: x-tier
+                  value: premium
+          limit:
+            requests: 3
+            unit: Minute
+---
+# Was: proxy timeout annotations / controller ConfigMap.
+# A ClientTrafficPolicy can only target a Gateway or ListenerSet, and only in its own namespace,
+# so this one has to live in the platform namespace. The app team can't own it.
+apiVersion: gateway.envoyproxy.io/v1alpha1
+kind: ClientTrafficPolicy
+metadata:
+  name: chat-client
+  namespace: platform
+spec:
+  targetRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: shared-gw
+      sectionName: http
+  timeout:
+    http:
+      streamIdleTimeout: 300s   # long-lived token streams

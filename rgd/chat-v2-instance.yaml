@@ -1,0 +1,8 @@
+# Replay of break 1: the "rename" is now a new instance. Delete the old one and every piece moves together.
+apiVersion: platform.example.com/v1alpha1
+kind: ChatEndpoint
+metadata:
+  name: chat-v2
+  namespace: team-chat
+spec:
+  hostname: chat.example.com

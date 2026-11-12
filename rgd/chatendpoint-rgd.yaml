@@ -1,0 +1,166 @@
+# Owned by the platform team. App teams only ever create a ChatEndpoint.
+apiVersion: kro.run/v1alpha1
+kind: ResourceGraphDefinition
+metadata:
+  name: chatendpoint
+spec:
+  schema:
+    apiVersion: v1alpha1
+    kind: ChatEndpoint
+    group: platform.example.com
+    spec:
+      hostname: string
+      gatewayName: string | default="shared-gw"
+      listenerPort: integer | default=8081
+      premiumModel: string | default="model-70b"
+      defaultModel: string | default="model-8b"
+      modelPort: integer | default=5678
+      auth:
+        enabled: boolean | default=true
+        jwksConfigMap: string | default="chat-jwks"
+      rateLimit:
+        premiumRequestsPerMinute: integer | default=3 minimum=1
+      streamIdleTimeout: string | default="300s"
+    # The answer to "is my policy actually attached?" lives on the one object the app team owns.
+    status:
+      listenerAccepted: ${listenerSet.status.?conditions.orValue([]).exists(c, c.type == "Accepted" && c.status == "True")}
+      routeAccepted: ${route.status.?parents.orValue([]).exists(p, p.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+      rateLimitAttached: ${rateLimit.status.?ancestors.orValue([]).exists(a, a.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+      clientPolicyAttached: ${clientPolicy.status.?ancestors.orValue([]).exists(a, a.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+
+  resources:
+    # Read-only reference to the platform Gateway. kro never creates or deletes it.
+    # If it doesn't exist, the instance waits instead of silently doing nothing.
+    - id: gateway
+      externalRef:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: Gateway
+        metadata:
+          name: ${schema.spec.gatewayName}
+          namespace: platform
+
+    # The app's own listener on the shared Gateway (ListenerSet: Standard since Gateway API v1.5).
+    # This is what lets the ClientTrafficPolicy belong to the app instead of the platform namespace.
+    # Its own port, because plain-HTTP listeners on one port merge into a single Envoy listener and
+    # Envoy Gateway rejects a ClientTrafficPolicy that would apply to more than one of them.
+    # In production, use HTTPS on 443: Envoy splits HTTPS listeners by hostname (SNI).
+    - id: listenerSet
+      template:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: ListenerSet
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          parentRef:
+            group: gateway.networking.k8s.io
+            kind: Gateway
+            name: ${gateway.metadata.name}
+            namespace: ${gateway.metadata.namespace}
+          listeners:
+            - name: http
+              protocol: HTTP
+              port: ${schema.spec.listenerPort}
+              hostname: ${schema.spec.hostname}
+      readyWhen:
+        - ${listenerSet.status.?conditions.orValue([]).exists(c, c.type == "Accepted" && c.status == "True")}
+
+    - id: route
+      template:
+        apiVersion: gateway.networking.k8s.io/v1
+        kind: HTTPRoute
+        metadata:
+          name: ${schema.metadata.name}
+          namespace: ${schema.metadata.namespace}
+        spec:
+          parentRefs:
+            - group: gateway.networking.k8s.io
+              kind: ListenerSet
+              name: ${listenerSet.metadata.name}
+              sectionName: http
+          hostnames:
+            - ${schema.spec.hostname}
+          rules:
+            - matches:
+                - headers:
+                    - name: x-tier
+                      value: premium
+              backendRefs:
+                - name: ${schema.spec.premiumModel}
+                  port: ${schema.spec.modelPort}
+            - backendRefs:
+                - name: ${schema.spec.defaultModel}
+                  port: ${schema.spec.modelPort}
+      readyWhen:
+        - ${route.status.?parents.orValue([]).exists(p, p.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+
+    # targetRefs.name is an expression, not a string. That reference is the dependency edge:
+    # created after the route, deleted before it, renamed with it.
+    - id: auth
+      includeWhen:
+        - ${schema.spec.auth.enabled}
+      template:
+        apiVersion: gateway.envoyproxy.io/v1alpha1
+        kind: SecurityPolicy
+        metadata:
+          name: ${schema.metadata.name}-auth
+          namespace: ${schema.metadata.namespace}
+        spec:
+          targetRefs:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: ${route.metadata.name}
+          jwt:
+            providers:
+              - name: demo-issuer
+                localJWKS:
+                  type: ValueRef
+                  valueRef:
+                    group: ""
+                    kind: ConfigMap
+                    name: ${schema.spec.auth.jwksConfigMap}
+      readyWhen:
+        - ${auth.status.?ancestors.orValue([]).exists(a, a.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+
+    - id: rateLimit
+      template:
+        apiVersion: gateway.envoyproxy.io/v1alpha1
+        kind: BackendTrafficPolicy
+        metadata:
+          name: ${schema.metadata.name}-ratelimit
+          namespace: ${schema.metadata.namespace}
+        spec:
+          targetRefs:
+            - group: gateway.networking.k8s.io
+              kind: HTTPRoute
+              name: ${route.metadata.name}
+          rateLimit:
+            local:
+              rules:
+                - clientSelectors:
+                    - headers:
+                        - name: x-tier
+                          value: premium
+                  limit:
+                    requests: ${schema.spec.rateLimit.premiumRequestsPerMinute}
+                    unit: Minute
+      readyWhen:
+        - ${rateLimit.status.?ancestors.orValue([]).exists(a, a.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}
+
+    - id: clientPolicy
+      template:
+        apiVersion: gateway.envoyproxy.io/v1alpha1
+        kind: ClientTrafficPolicy
+        metadata:
+          name: ${schema.metadata.name}-client
+          namespace: ${schema.metadata.namespace}
+        spec:
+          targetRefs:
+            - group: gateway.networking.k8s.io
+              kind: ListenerSet
+              name: ${listenerSet.metadata.name}
+          timeout:
+            http:
+              streamIdleTimeout: ${schema.spec.streamIdleTimeout}
+      readyWhen:
+        - ${clientPolicy.status.?ancestors.orValue([]).exists(a, a.conditions.exists(c, c.type == "Accepted" && c.status == "True"))}

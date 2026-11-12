@@ -1,0 +1,56 @@
+# Two fake "models". Each one just answers with its name.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-70b
+  namespace: team-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: model-70b}
+  template:
+    metadata:
+      labels: {app: model-70b}
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0
+          args: ["-text=answer from llama-70b (premium)"]
+          ports: [{containerPort: 5678}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-70b
+  namespace: team-chat
+spec:
+  selector: {app: model-70b}
+  ports: [{port: 5678, targetPort: 5678}]
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: model-8b
+  namespace: team-chat
+spec:
+  replicas: 1
+  selector:
+    matchLabels: {app: model-8b}
+  template:
+    metadata:
+      labels: {app: model-8b}
+    spec:
+      containers:
+        - name: echo
+          image: hashicorp/http-echo:1.0
+          args: ["-text=answer from llama-8b"]
+          ports: [{containerPort: 5678}]
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: model-8b
+  namespace: team-chat
+spec:
+  selector: {app: model-8b}
+  ports: [{port: 5678, targetPort: 5678}]
